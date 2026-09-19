@@ -11,8 +11,11 @@ spring:
 #Deepseek上游调用配置
 router:
   deepseek:
+    # 调用者使用的中转站模型别名
+    alias: study-chat
     base-url: https://api.deepseek.com
     #从运行环境中读取密钥
     api-key: ${DEEPSEEK_API_KEY}
     #实际上调用的上游模型
     model: deepseek-flash
+

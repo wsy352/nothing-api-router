@@ -14,4 +14,5 @@ public class ChatCompletionVO {
     private long created;//本次响应的创建时间
     private String model;//本次响应所使用的模型
     private List<ChatChoiceVO> choices;
+    private UsageVO usage;//本次响应的token用量
 }
