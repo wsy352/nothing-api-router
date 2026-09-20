@@ -2,6 +2,7 @@ package com.lingrui.router.service.impl;
 
 import com.lingrui.router.client.UpstreamClient;
 import com.lingrui.router.client.impl.DeepseekClientImpl;
+import com.lingrui.router.config.ArkProperties;
 import com.lingrui.router.config.ChannelProperties;
 import com.lingrui.router.dto.ChatCompletionDTO;
 import com.lingrui.router.dto.ChatMessageDTO;
@@ -10,6 +11,7 @@ import com.lingrui.router.vo.ChatChoiceVO;
 import com.lingrui.router.vo.ChatCompletionVO;
 import com.lingrui.router.vo.ChatMessageVO;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -24,13 +26,23 @@ import java.util.UUID;
 @Service
 public class RouterServiceImpl implements RouterService {
 
-    //上游模型客户端，当前使用deepseek实现
+    //明确指定使用deepseek 客户端
     @Autowired
-    private UpstreamClient upstreamClient;
+    @Qualifier("deepseekClientImpl")
+    private UpstreamClient deepseekClient;
 
-    //当前渠道配置，用于读取允许调用的模型别名
+    //明确指定使用火山方舟客户端
+    @Autowired
+    @Qualifier("arkClientImpl")
+    private UpstreamClient arkClient;
+
+    //deepseek配置，用于读取deepseek的模型别名
     @Autowired
     private ChannelProperties channelProperties;
+
+    //火山方舟配置，用于读取豆包的模型别名
+    @Autowired
+    private ArkProperties arkProperties;
 
 
     /**
@@ -48,8 +60,13 @@ public class RouterServiceImpl implements RouterService {
                     "model 不能为空"
             );
 
-        //调用者填写的模型名必须与配置中的别名一致
-        if(!request.getModel().equals(channelProperties.getAlias())){
+        //根据模型别名，选择本次请求使用的客户端
+        UpstreamClient selectedClient;
+        if(request.getModel().equals(channelProperties.getAlias())){
+            selectedClient = deepseekClient;
+        }else if(request.getModel().equals(arkProperties.getAlias())){
+            selectedClient = arkClient;
+        }else{
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
                     "不支持的模型别名：" + request.getModel()
@@ -110,9 +127,8 @@ public class RouterServiceImpl implements RouterService {
                     "当前尚不支持流式调用"
             );
         }
-        //通过检查后，才能调用上游平台
-        //调用客户端，由客户端向deepseek发送请求并读取回答
-        ChatCompletionVO response = upstreamClient.chat(request);
+        //所有参数检查通过后，让选中的客户发送请求
+        ChatCompletionVO response = selectedClient.chat(request);
         return response;
     }
 }

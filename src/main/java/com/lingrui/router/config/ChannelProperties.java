@@ -1,6 +1,7 @@
 package com.lingrui.router.config;
 
 import lombok.Data;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
@@ -15,4 +16,7 @@ public class ChannelProperties {
     private String apiKey;//上游渠道的API Key
     private String model;//上游渠道调用的模型
     private String alias;//调用者使用的模型别名
+
+    @Autowired
+    private ArkProperties arkProperties;//火山方舟配置，用于读取豆包的模型别名
 }

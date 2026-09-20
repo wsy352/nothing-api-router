@@ -19,3 +19,9 @@ router:
     #实际上调用的上游模型
     model: deepseek-flash
 
+  ark:
+    alias: doubao-chat
+    base-url: https://ark.cn-beijing.volces.com/api/v3
+    api-key: ${ARK_API_KEY}
+    model: doubao-seed-2-1-turbo-260628
+
