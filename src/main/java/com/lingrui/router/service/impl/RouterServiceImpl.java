@@ -19,6 +19,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
  * 路由服务实现类，负责组织请求处理流程
@@ -46,12 +47,12 @@ public class RouterServiceImpl implements RouterService {
 
 
     /**
-     * 处理非流式聊天请求
-     * @param request 调用者传入的聊天请求
-     * @return 统一格式的聊天响应
+     * 校验请求参数，并选择对应的上游客户端
+     * @param request 聊天请求
+     * @return 选中的客户端
      */
-    @Override
-    public ChatCompletionVO chat(ChatCompletionDTO request) {
+
+    private UpstreamClient validateAndSelectClient(ChatCompletionDTO request) {
 
         //检查模型名称，能不能缺失，也不能是空白字符串
         if(request.getModel() == null || request.getModel().isBlank())
@@ -120,15 +121,55 @@ public class RouterServiceImpl implements RouterService {
             }
         }
 
-        //当前仅支持非流式调用，明确拒绝流式请求
-        if(Boolean.TRUE.equals(request.getStream())) {
+        //这里只返回选中的客户端，不发送请求
+        return selectedClient;
+    }
+
+    /**
+     * 处理非流式聊天请求
+     * @param request 聊天请求
+     * @return 完整聊天响应
+     */
+    @Override
+    public ChatCompletionVO chat(ChatCompletionDTO request) {
+
+        //完成校验，并拿到选中的客户端
+        UpstreamClient selectedClient = validateAndSelectClient(request);
+
+        //防止流式请求被误交给非流式方法
+        if(Boolean.TRUE.equals(request.getStream())){
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
-                    "当前尚不支持流式调用"
+                    "流式请求应通过流式处理入口调用"
             );
         }
-        //所有参数检查通过后，让选中的客户发送请求
-        ChatCompletionVO response = selectedClient.chat(request);
-        return response;
+
+        return selectedClient.chat(request);
     }
+
+    /**
+     * 处理流式聊天请求
+     * @param request 聊天请求
+     * @param eventConsumer 收到事件后执行的动作
+     */
+    @Override
+    public void streamChat(ChatCompletionDTO request, Consumer<String> eventConsumer) {
+
+        UpstreamClient selectedClient = validateAndSelectClient(request);
+
+        if(!Boolean.TRUE.equals(request.getStream())){
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "流式请求需设置 stream 为 true"
+            );
+        }
+
+
+        //把请求和事件处理动作一起交给客户端
+        selectedClient.streamChat(request, eventConsumer);
+    }
+
+
+
+
 }
