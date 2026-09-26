@@ -7,6 +7,7 @@ import com.lingrui.router.vo.ChatCompletionVO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -15,6 +16,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -30,7 +32,23 @@ public class ArkClientImpl implements UpstreamClient {
     private ArkProperties arkProperties;
 
     //用于发送HTTP请求
-    private final RestClient restClient = RestClient.create();
+    private final RestClient restClient = createRestClient();
+
+    //创建带有超时设置的 HTTP 客户端
+    private static RestClient createRestClient(){
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        
+        //建立连接时的等待上限
+        factory.setConnectTimeout(Duration.ofSeconds(10));
+
+        //读取上游数据时的等待上限
+        factory.setReadTimeout(Duration.ofSeconds(60));
+
+        return RestClient.builder()
+                .requestFactory(factory)
+                .build();
+    }
+
 
     /**
      * 调用方舟火山的非流式聊天接口

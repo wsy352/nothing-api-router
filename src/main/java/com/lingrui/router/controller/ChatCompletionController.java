@@ -3,6 +3,7 @@ package com.lingrui.router.controller;
 import com.lingrui.router.dto.ChatCompletionDTO;
 import com.lingrui.router.service.RouterService;
 import jakarta.servlet.http.HttpServletResponse;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -16,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 /**
  *聊天接口，负责接收调用者的聊天请求
  */
+@Slf4j
 @RestController
 @RequestMapping("/v1")
 public class ChatCompletionController {
@@ -51,6 +53,9 @@ public class ChatCompletionController {
                 response.reset();
                 throw exception;
             }
+
+            //已经开始发送后发生异常，记录原因，便于排查
+            log.error("流式响应发送过程在发生异常", exception);
 
             //已经开始发送后，不能再改变 HTTP 状态码
             //用流内错误事件告诉调用者，不伪造正常结束标记

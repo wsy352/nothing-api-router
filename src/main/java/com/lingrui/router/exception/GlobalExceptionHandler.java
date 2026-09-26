@@ -9,6 +9,7 @@ import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.net.SocketTimeoutException;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -88,18 +89,43 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ResourceAccessException.class)
     public ResponseEntity<Map<String, Object>> handleUpstreamConnectionException(ResourceAccessException exception){
 
-        //内层：说明发生了什么问题
-        Map<String, Object> error = new HashMap<>();
-        error.put("code", "upstream_connection_error");
-        error.put("message" ,"与上游模型服务通信失败，请稍后重试");
+        boolean timeout = isTimeout(exception);
 
-        //外层：保持现有的错误响应结构
+        Map<String, Object> error = new HashMap<>();
+        HttpStatus status;
+
+        if(timeout){
+            error.put("code", "upstream_timeout");
+            error.put("message", "等待上游模型服务响应超时，请稍后重试");
+            status = HttpStatus.GATEWAY_TIMEOUT;
+        } else{
+            error.put("code", "upstream_connection_error");
+            error.put("message" ,"与上游模型服务通信失败，请稍后重试");
+            status = HttpStatus.BAD_GATEWAY;
+        }
+
         Map<String, Object> body = new HashMap<>();
         body.put("error", error);
 
         return ResponseEntity
-                .status(HttpStatus.BAD_GATEWAY)
+                .status(status)
                 .body(body);
     }
 
+    /**
+     * 检查异常及其内部原因，是否包含网络超时
+     */
+    private boolean isTimeout(Throwable exception) {
+        Throwable current = exception;
+
+        while (current != null){
+            if(current instanceof SocketTimeoutException){
+                return true;
+            }
+
+            current = current.getCause();
+        }
+
+        return false;
+    }
 }
