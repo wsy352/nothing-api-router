@@ -6,10 +6,14 @@ import com.lingrui.router.config.ArkProperties;
 import com.lingrui.router.config.ChannelProperties;
 import com.lingrui.router.dto.ChatCompletionDTO;
 import com.lingrui.router.dto.ChatMessageDTO;
+import com.lingrui.router.entity.ChatCallLog;
+import com.lingrui.router.mapper.ChatCallLogMapper;
 import com.lingrui.router.service.RouterService;
 import com.lingrui.router.vo.ChatChoiceVO;
 import com.lingrui.router.vo.ChatCompletionVO;
 import com.lingrui.router.vo.ChatMessageVO;
+import com.lingrui.router.vo.UsageVO;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
@@ -17,6 +21,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -24,6 +29,7 @@ import java.util.function.Consumer;
 /**
  * 路由服务实现类，负责组织请求处理流程
  */
+@Slf4j
 @Service
 public class RouterServiceImpl implements RouterService {
 
@@ -44,6 +50,9 @@ public class RouterServiceImpl implements RouterService {
     //火山方舟配置，用于读取豆包的模型别名
     @Autowired
     private ArkProperties arkProperties;
+
+    @Autowired
+    private ChatCallLogMapper chatCallLogMapper;
 
 
     /**
@@ -144,7 +153,61 @@ public class RouterServiceImpl implements RouterService {
             );
         }
 
-        return selectedClient.chat(request);
+        ChatCallLog record = new ChatCallLog();
+        record.setRequestId(UUID.randomUUID().toString());
+        record.setModelAlias(request.getModel());
+        record.setChannel(selectedClient == arkClient ? "ark" : "deepseek");
+        record.setStream(false);
+        record.setCreatedAt(LocalDateTime.now());
+
+        //用于计算上游调用和响应处理的耗时
+        long startNanos = System.nanoTime();
+
+        try {
+            //调用真实上游
+            ChatCompletionVO response = selectedClient.chat(request);
+
+            if(response == null){
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST,
+                        "上游返回了空响应"
+                );
+            }
+
+            //只有上游实际返回用量，才填写Token数
+            UsageVO usage = response.getUsage();
+            if(usage != null) {
+                record.setPromptTokens(usage.getPromptTokens());
+                record.setCompletionTokens(usage.getCompletionTokens());
+                record.setTotalTokens(usage.getTotalTokens());
+            }
+
+                record.setStatus("SUCCESS");
+                return response;
+
+            }catch (RuntimeException exception){
+                record.setStatus("FAILED");
+                record.setErrorCode("upstream_call_failed");
+
+                //保留原来的异常处理流程
+                throw exception;
+
+            } finally {
+            //无论成功还是失败，都尝试保存调用记录
+            long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
+            record.setDurationMs(durationMs);
+
+            try {
+                chatCallLogMapper.insert(record);
+        } catch (RuntimeException saveException){
+                //保存记录失败时留下日志，不覆盖原来的调用结果
+                log.error(
+                        "保存调用记录失败,requestId = {}",
+                        record.getRequestId(),
+                        saveException
+                );
+            }
+        }
     }
 
     /**

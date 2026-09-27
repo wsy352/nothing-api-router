@@ -1,7 +1,9 @@
 package com.lingrui.router.vo;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.Getter;
 
+@Getter
 public class UsageVO {
 
     //输入token数，包含本次请求携带的上下文

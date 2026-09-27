@@ -3,6 +3,7 @@ package com.lingrui.router;
 import com.sun.net.httpserver.HttpServer;
 
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 
 public class SlowUpstreamServer {
 
@@ -11,14 +12,23 @@ public class SlowUpstreamServer {
 
         server.createContext("/chat/completions", exchange -> {
             try {
-                //读完请求体，但不打印其中内容
+                //读完请求体
                 exchange.getRequestBody().readAllBytes();
-                System.out.println("收到请求，故意等待 70 秒");
+                //告诉中转站，这是一个SSE响应
+                exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=UTF-8");
+                exchange.sendResponseHeaders(200, 0);
 
-                // 模拟上游迟迟不返回响应
+                //先发送一条包含正文的事件
+                String event = "data: {\"choices\":[{\"index\":0,"
+                        + "\"delta\":{\"role\":\"assistant\","
+                        + "\"content\":\"这是超时前的一段回答。\"}}]}\n\n";
+
+                exchange.getResponseBody().write(event.getBytes(StandardCharsets.UTF_8));
+                exchange.getResponseBody().flush();
+                System.out.println("已发送第一条事件，接下来暂停 70 秒");
+                //模拟发送了一部分回答后，上游卡住
                 Thread.sleep(70_000);
 
-                exchange.sendResponseHeaders(200, -1);
             } catch (InterruptedException exception){
                 Thread.currentThread().interrupt();
             } finally {
