@@ -1,14 +1,15 @@
 package com.lingrui.router.controller;
 
+import com.lingrui.router.config.RouterAuthProperties;
 import com.lingrui.router.dto.ChatCompletionDTO;
+import com.lingrui.router.service.RouterAuthService;
 import com.lingrui.router.service.RouterService;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -21,8 +22,13 @@ import java.nio.charset.StandardCharsets;
 @RestController
 @RequestMapping("/v1")
 public class ChatCompletionController {
+
     @Autowired
     private RouterService routerService;
+
+    @Autowired
+    private RouterAuthService routerAuthService;
+
     /**
      * 根据 stream 参数，处理非流式或流式聊天请求
      * @param request 聊天请求
@@ -31,7 +37,12 @@ public class ChatCompletionController {
      */
     @PostMapping("/chat/completions")
     public Object chat(@RequestBody ChatCompletionDTO request,
+                       @RequestHeader(value =  "Authorization", required = false)
+                       String authorization,
                        HttpServletResponse response) throws IOException {
+
+        //在调用模型和发送流式响应之前，现验证秘钥
+        routerAuthService.validateApiKey(authorization);
 
         //非流式：仍然按照原来的方式返回完整响应
         if(!Boolean.TRUE.equals(request.getStream())){
@@ -109,5 +120,6 @@ public class ChatCompletionController {
             throw new UncheckedIOException(exception);
         }
     }
+
 
 }
