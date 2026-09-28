@@ -10,4 +10,35 @@
         #{totalTokens}, #{status}, #{errorCode}, #{durationMs}, #{createdAt})
     </insert>
 
+    <select id="selectRecent"
+
+            resultType="com.lingrui.router.entity.ChatCallLog">
+        SELECT
+            id,
+            request_id AS requestId,
+            model_alias AS modelAlias,
+            channel,
+            stream,
+            prompt_tokens AS promptTokens,
+            completion_tokens AS completionTokens,
+            total_tokens AS totalTokens,
+            status,
+            error_code AS errorCode,
+            duration_ms AS durationMs,
+            created_at AS createdAt
+        FROM chat_call_log
+        ORDER BY id DESC
+        LIMIT 20
+    </select>
+
+    <select id="selectStats"
+
+            resultType="com.lingrui.router.vo.ChatCallStatsVO">
+        SELECT
+            COUNT(*) AS totalCount,
+            COUNT(CASE WHEN status = 'SUCCESS' THEN 1 END) AS successCount,
+            COUNT(CASE WHEN status = 'FAILED' THEN 1 END) AS failedCount
+        FROM chat_call_log
+    </select>
+
 </mapper>

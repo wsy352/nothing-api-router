@@ -19,6 +19,9 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -53,6 +56,10 @@ public class RouterServiceImpl implements RouterService {
 
     @Autowired
     private ChatCallLogMapper chatCallLogMapper;
+
+    //负责解析JSON，用来操作JSON
+    @Autowired
+    private ObjectMapper objectMapper;
 
 
     /**
@@ -153,13 +160,7 @@ public class RouterServiceImpl implements RouterService {
             );
         }
 
-        ChatCallLog record = new ChatCallLog();
-        record.setRequestId(UUID.randomUUID().toString());
-        record.setModelAlias(request.getModel());
-        record.setChannel(selectedClient == arkClient ? "ark" : "deepseek");
-        record.setStream(false);
-        record.setCreatedAt(LocalDateTime.now());
-
+        ChatCallLog record = createCallLog(request, selectedClient);
         //用于计算上游调用和响应处理的耗时
         long startNanos = System.nanoTime();
 
@@ -169,7 +170,7 @@ public class RouterServiceImpl implements RouterService {
 
             if(response == null){
                 throw new ResponseStatusException(
-                        HttpStatus.BAD_REQUEST,
+                        HttpStatus.BAD_GATEWAY,
                         "上游返回了空响应"
                 );
             }
@@ -194,19 +195,7 @@ public class RouterServiceImpl implements RouterService {
 
             } finally {
             //无论成功还是失败，都尝试保存调用记录
-            long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
-            record.setDurationMs(durationMs);
-
-            try {
-                chatCallLogMapper.insert(record);
-        } catch (RuntimeException saveException){
-                //保存记录失败时留下日志，不覆盖原来的调用结果
-                log.error(
-                        "保存调用记录失败,requestId = {}",
-                        record.getRequestId(),
-                        saveException
-                );
-            }
+            saveCallLog(record, startNanos);
         }
     }
 
@@ -227,10 +216,116 @@ public class RouterServiceImpl implements RouterService {
             );
         }
 
+        //为整次流式请求创建一条记录
+        ChatCallLog record = createCallLog(request, selectedClient);
+        long startNanos = System.nanoTime();
 
-        //把请求和事件处理动作一起交给客户端
-        selectedClient.streamChat(request, eventConsumer);
+        try{
+            selectedClient.streamChat(request, data -> {
+
+                //收到事件后，先检查里面有没有用量
+                collectStreamUsage(data, record);
+
+                //再把这条事件原样交给 Controller 发送
+                eventConsumer.accept(data);
+            });
+
+            //当前客户端只有收到并转发[DONE]后才正常返回
+            record.setStatus("SUCCESS");
+        } catch (RuntimeException exception){
+            record.setStatus("FAILED");
+            record.setErrorCode("stream_failed");
+
+            //继续交给 Controller 处理错误响应
+            throw exception;
+        } finally{
+            //整次调用结束后保存一次，不是每条事件保存一次
+            saveCallLog(record, startNanos);
+        }
     }
+
+    /**
+     * 创建调用记录，填写调用前已经知道的信息
+     */
+    private ChatCallLog createCallLog(ChatCompletionDTO request, UpstreamClient selectedClient){
+        ChatCallLog record = new ChatCallLog();
+
+        record.setRequestId(UUID.randomUUID().toString());
+        record.setModelAlias(request.getModel());
+        record.setChannel(selectedClient == arkClient ? "ark" : "deepseek");
+        record.setStream(Boolean.TRUE.equals(request.getStream()));
+        record.setCreatedAt(LocalDateTime.now());
+
+        return record;
+    }
+
+    /**
+     * 计算耗时并尝试保存记录，保存失败时记录日志
+     */
+    private void saveCallLog(ChatCallLog record, long startNanos){
+        long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
+        record.setDurationMs(durationMs);
+
+        try {
+            chatCallLogMapper.insert(record);
+        } catch(RuntimeException saveException){
+            log.error(
+                    "保存调用记录失败,requestId = {}",
+                    record.getRequestId(),
+                    saveException
+            );
+        }
+    }
+
+    /**
+     * 从一条流式事件中读取流量，写入当前调用记录
+     */
+    private void collectStreamUsage(String data, ChatCallLog record){
+
+        //结束标记不是 JSON ，不需要解析
+        if("[DONE]".equals(data)) {
+            return;
+        }
+
+        try {
+            //将 JSON 字符串解析成可以按字段访问的结构
+            JsonNode root = objectMapper.readTree(data);
+
+            if(root == null){
+                return;
+            }
+
+            //上游可能在流内部返回错误
+            if(root.hasNonNull("error")) {
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_GATEWAY,
+                        "上游返回了流式错误"
+                );
+            }
+
+            JsonNode usageNode = root.get("usage");
+
+            //这条事假没有用量，继续等待后面的事件
+            if(usageNode == null || usageNode.isNull()){
+                return;
+            }
+
+            //将 usage 这一部分转换成已有的 UsageVO
+            UsageVO usage = objectMapper.treeToValue(usageNode, UsageVO.class);
+
+            record.setPromptTokens(usage.getPromptTokens());
+            record.setCompletionTokens(usage.getCompletionTokens());
+            record.setTotalTokens(usage.getTotalTokens());
+        } catch (JacksonException exception){
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY,
+                    "上游流式数据格式异常",
+                    exception
+            );
+        }
+
+    }
+
 
 
 
