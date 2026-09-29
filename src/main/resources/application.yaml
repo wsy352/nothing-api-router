@@ -27,6 +27,7 @@ router:
 
   auth:
     api-key: ${ROUTER_API_KEY}
+    admin-key: ${ROUTER_ADMIN_KEY}
 
 mybatis:
   mapper-locations: classpath:mapper/*.xml

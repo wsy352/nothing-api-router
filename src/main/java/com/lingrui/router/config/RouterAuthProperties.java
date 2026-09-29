@@ -15,4 +15,6 @@ import org.springframework.stereotype.Component;
 public class RouterAuthProperties {
 
     private String apiKey;
+
+    private String adminKey;
 }
