@@ -1,5 +1,6 @@
 package com.lingrui.router.controller;
 
+import com.lingrui.router.context.RouterAuthContext;
 import com.lingrui.router.dto.ChatCompletionDTO;
 import com.lingrui.router.service.RouterAuthService;
 import com.lingrui.router.service.RouterService;
@@ -38,18 +39,19 @@ public class ChatCompletionController {
                        String authorization,
                        HttpServletResponse response) throws IOException {
 
-        //在调用模型和发送流式响应之前，现验证秘钥
-        routerAuthService.validateChatKey(authorization);
+        //验证秘钥，并接收服务端查询得到的用户身份
+        RouterAuthContext routerAuthContext = routerAuthService.validateChatKey(authorization);
 
         //非流式：仍然按照原来的方式返回完整响应
         if(!Boolean.TRUE.equals(request.getStream())){
-            return routerService.chat(request);
+            return routerService.chat(request, routerAuthContext);
         }
 
         try{
             //流式：收到一条事件，就发送一条事件
             routerService.streamChat(
                     request,
+                    routerAuthContext,
                     data -> sendSseEvent(response, data)
             );
         } catch(UncheckedIOException exception){

@@ -3,11 +3,38 @@
         PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.lingrui.router.mapper.ChatCallLogMapper">
-    <insert id="insert" parameterType="com.lingrui.router.entity.ChatCallLog" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO chat_call_log (request_id, model_alias, channel, stream, prompt_tokens, completion_tokens,
-        total_tokens, status, error_code, duration_ms, created_at)
-        VALUES (#{requestId}, #{modelAlias}, #{channel}, #{stream}, #{promptTokens}, #{completionTokens},
-        #{totalTokens}, #{status}, #{errorCode}, #{durationMs}, #{createdAt})
+
+    <insert id="insert" parameterType="com.lingrui.router.entity.ChatCallLog"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO chat_call_log (
+                                   request_id,
+                                   user_id,
+                                   api_key_id,
+                                   model_alias,
+                                   channel,
+                                   stream,
+                                   prompt_tokens,
+                                   completion_tokens,
+                                   total_tokens,
+                                   status,
+                                   error_code,
+                                   duration_ms,
+                                   created_at)
+        VALUES (
+                #{requestId},
+                #{userId},
+                #{apiKeyId},
+                #{modelAlias},
+                #{channel},
+                #{stream},
+                #{promptTokens},
+                #{completionTokens},
+                #{totalTokens},
+                #{status},
+                #{errorCode},
+                #{durationMs},
+                #{createdAt}
+               )
     </insert>
 
     <select id="selectRecent"
@@ -16,6 +43,8 @@
         SELECT
             id,
             request_id AS requestId,
+            user_id AS userId,
+            api_key_id AS apiKeyId,
             model_alias AS modelAlias,
             channel,
             stream,

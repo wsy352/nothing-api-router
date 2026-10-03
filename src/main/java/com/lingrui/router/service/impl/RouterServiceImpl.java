@@ -4,6 +4,7 @@ import com.lingrui.router.client.UpstreamClient;
 import com.lingrui.router.client.impl.DeepseekClientImpl;
 import com.lingrui.router.config.ArkProperties;
 import com.lingrui.router.config.ChannelProperties;
+import com.lingrui.router.context.RouterAuthContext;
 import com.lingrui.router.dto.ChatCompletionDTO;
 import com.lingrui.router.dto.ChatMessageDTO;
 import com.lingrui.router.entity.ChatCallLog;
@@ -144,10 +145,11 @@ public class RouterServiceImpl implements RouterService {
     /**
      * 处理非流式聊天请求
      * @param request 聊天请求
+     * @param routerAuthContext 服务端验证得到的调用者身份
      * @return 完整聊天响应
      */
     @Override
-    public ChatCompletionVO chat(ChatCompletionDTO request) {
+    public ChatCompletionVO chat(ChatCompletionDTO request, RouterAuthContext routerAuthContext) {
 
         //完成校验，并拿到选中的客户端
         UpstreamClient selectedClient = validateAndSelectClient(request);
@@ -160,7 +162,7 @@ public class RouterServiceImpl implements RouterService {
             );
         }
 
-        ChatCallLog record = createCallLog(request, selectedClient);
+        ChatCallLog record = createCallLog(request, selectedClient, routerAuthContext);
         //用于计算上游调用和响应处理的耗时
         long startNanos = System.nanoTime();
 
@@ -202,10 +204,11 @@ public class RouterServiceImpl implements RouterService {
     /**
      * 处理流式聊天请求
      * @param request 聊天请求
+     * @param routerAuthContext 服务端验证得到的调用者身份
      * @param eventConsumer 收到事件后执行的动作
      */
     @Override
-    public void streamChat(ChatCompletionDTO request, Consumer<String> eventConsumer) {
+    public void streamChat(ChatCompletionDTO request, RouterAuthContext routerAuthContext, Consumer<String> eventConsumer) {
 
         UpstreamClient selectedClient = validateAndSelectClient(request);
 
@@ -217,7 +220,7 @@ public class RouterServiceImpl implements RouterService {
         }
 
         //为整次流式请求创建一条记录
-        ChatCallLog record = createCallLog(request, selectedClient);
+        ChatCallLog record = createCallLog(request, selectedClient, routerAuthContext);
         long startNanos = System.nanoTime();
 
         try{
@@ -247,10 +250,12 @@ public class RouterServiceImpl implements RouterService {
     /**
      * 创建调用记录，填写调用前已经知道的信息
      */
-    private ChatCallLog createCallLog(ChatCompletionDTO request, UpstreamClient selectedClient){
+    private ChatCallLog createCallLog(ChatCompletionDTO request, UpstreamClient selectedClient, RouterAuthContext routerAuthContext){
         ChatCallLog record = new ChatCallLog();
 
         record.setRequestId(UUID.randomUUID().toString());
+        record.setUserId(routerAuthContext.getUserId());
+        record.setApiKeyId(routerAuthContext.getApiKeyId());
         record.setModelAlias(request.getModel());
         record.setChannel(selectedClient == arkClient ? "ark" : "deepseek");
         record.setStream(Boolean.TRUE.equals(request.getStream()));
