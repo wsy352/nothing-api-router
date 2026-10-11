@@ -68,7 +68,7 @@ public class DeepseekClientImpl implements UpstreamClient{
         Map<String, String> thinking = new HashMap<>();
         thinking.put("type", "disabled");
         body.put("thinking", thinking);
-        body.put("max_tokens", 128);
+        body.put("max_tokens", request.getMaxTokens());
 
         //发送POST请求，并将相应JSON转换成聊天响应对象
         ChatCompletionVO response = restClient.post()// 创建一个POST请求
@@ -102,7 +102,7 @@ public class DeepseekClientImpl implements UpstreamClient{
         body.put("thinking", thinking);
 
         //暂时沿用非流式测试的输出上限
-        body.put("max_tokens", 128);
+        body.put("max_tokens", request.getMaxTokens());
 
         restClient.post()
                 .uri(url)

@@ -18,12 +18,30 @@ router:
     api-key: ${DEEPSEEK_API_KEY}
     #实际上调用的上游模型
     model: deepseek-flash
+    default-max-tokens: 128
+    max-allowed-tokens: 4096
+    reserve-units: 10000
+
+    price:
+      version: demo-v1
+      input-units-per-million: 1000000
+      cached-input-units-per-million: 1000000
+      output-units-per-million: 1000000
 
   ark:
     alias: doubao-chat
     base-url: https://ark.cn-beijing.volces.com/api/v3
     api-key: ${ARK_API_KEY}
     model: doubao-seed-2-1-turbo-260628
+    default-max-tokens: 128
+    max-allowed-tokens: 4096
+    reserve-units: 10000
+
+    price:
+      version: demo-v1
+      input-units-per-million: 1000000
+      cached-input-units-per-million: 1000000
+      output-units-per-million: 1000000
 
   auth:
     api-key: ${ROUTER_API_KEY}

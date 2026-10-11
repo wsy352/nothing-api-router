@@ -4,12 +4,15 @@ import com.lingrui.router.client.UpstreamClient;
 import com.lingrui.router.client.impl.DeepseekClientImpl;
 import com.lingrui.router.config.ArkProperties;
 import com.lingrui.router.config.ChannelProperties;
+import com.lingrui.router.config.ModelPriceProperties;
 import com.lingrui.router.context.RouterAuthContext;
 import com.lingrui.router.dto.ChatCompletionDTO;
 import com.lingrui.router.dto.ChatMessageDTO;
 import com.lingrui.router.entity.ChatCallLog;
-import com.lingrui.router.mapper.ChatCallLogMapper;
+import com.lingrui.router.model.NormalizedUsage;
+import com.lingrui.router.service.ChatBillingService;
 import com.lingrui.router.service.RouterService;
+import com.lingrui.router.service.UsageNormalizationService;
 import com.lingrui.router.vo.ChatChoiceVO;
 import com.lingrui.router.vo.ChatCompletionVO;
 import com.lingrui.router.vo.ChatMessageVO;
@@ -56,11 +59,15 @@ public class RouterServiceImpl implements RouterService {
     private ArkProperties arkProperties;
 
     @Autowired
-    private ChatCallLogMapper chatCallLogMapper;
+    private ChatBillingService chatBillingService;
 
     //负责解析JSON，用来操作JSON
     @Autowired
     private ObjectMapper objectMapper;
+
+    //用量归一化服务：统一不同平台的 token 字段，并检查用量是否合理
+    @Autowired
+    private UsageNormalizationService usageNormalizationService;
 
 
     /**
@@ -68,7 +75,6 @@ public class RouterServiceImpl implements RouterService {
      * @param request 聊天请求
      * @return 选中的客户端
      */
-
     private UpstreamClient validateAndSelectClient(ChatCompletionDTO request) {
 
         //检查模型名称，能不能缺失，也不能是空白字符串
@@ -138,7 +144,9 @@ public class RouterServiceImpl implements RouterService {
             }
         }
 
-        //这里只返回选中的客户端，不发送请求
+        //非流式与流式共用校验接口，统一补齐输入长度
+        normalizeMaxTokens(request, selectedClient);
+
         return selectedClient;
     }
 
@@ -166,6 +174,9 @@ public class RouterServiceImpl implements RouterService {
         //用于计算上游调用和响应处理的耗时
         long startNanos = System.nanoTime();
 
+        //预留失败直接结束请求，避免余额不足时仍消耗上游 token
+        chatBillingService.reserveAndCreate(record);
+
         try {
             //调用真实上游
             ChatCompletionVO response = selectedClient.chat(request);
@@ -177,13 +188,8 @@ public class RouterServiceImpl implements RouterService {
                 );
             }
 
-            //只有上游实际返回用量，才填写Token数
-            UsageVO usage = response.getUsage();
-            if(usage != null) {
-                record.setPromptTokens(usage.getPromptTokens());
-                record.setCompletionTokens(usage.getCompletionTokens());
-                record.setTotalTokens(usage.getTotalTokens());
-            }
+            //将上游用量转换成统一格式，再写入调用记录
+            fillNormalizedUsage(response.getUsage(), record);
 
                 record.setStatus("SUCCESS");
                 return response;
@@ -197,7 +203,7 @@ public class RouterServiceImpl implements RouterService {
 
             } finally {
             //无论成功还是失败，都尝试保存调用记录
-            saveCallLog(record, startNanos);
+            finishBilling(record, startNanos);
         }
     }
 
@@ -223,6 +229,9 @@ public class RouterServiceImpl implements RouterService {
         ChatCallLog record = createCallLog(request, selectedClient, routerAuthContext);
         long startNanos = System.nanoTime();
 
+        //预留资金和创建记录同时提交，失败时不调用上游
+        chatBillingService.reserveAndCreate(record);
+
         try{
             selectedClient.streamChat(request, data -> {
 
@@ -242,8 +251,8 @@ public class RouterServiceImpl implements RouterService {
             //继续交给 Controller 处理错误响应
             throw exception;
         } finally{
-            //整次调用结束后保存一次，不是每条事件保存一次
-            saveCallLog(record, startNanos);
+            //整次流式调用结束后，统一结算或保存待处理结果
+            finishBilling(record, startNanos);
         }
     }
 
@@ -261,23 +270,57 @@ public class RouterServiceImpl implements RouterService {
         record.setStream(Boolean.TRUE.equals(request.getStream()));
         record.setCreatedAt(LocalDateTime.now());
 
+        //调用上游之前，确定并保存本次使用的价格
+        fillPriceSnapshot(selectedClient, record);
+
+        //在调用开始前确定本次预算，后续资金操作使用这一个值
+        record.setReservedUnits(resolveReserveUnits(selectedClient));
+
         return record;
     }
 
     /**
-     * 计算耗时并尝试保存记录，保存失败时记录日志
+     * 完成调用后的资金处理
+     * 成功且用量完整时尝试结算，其他情况保存为待处理
      */
-    private void saveCallLog(ChatCallLog record, long startNanos){
+    private void finishBilling(ChatCallLog chatCallLog, long startNanos){
+
         long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
-        record.setDurationMs(durationMs);
+
+        chatCallLog.setDurationMs(durationMs);
+
+        boolean completeUsage = chatCallLog.getPromptTokens() != null
+                && chatCallLog.getCachedInputTokens() != null
+                && chatCallLog.getCompletionTokens() != null;
+
+        if("SUCCESS".equals(chatCallLog.getStatus()) && completeUsage){
+            try {
+
+                //通过另一个 Spring 服务执行短事务
+                chatBillingService.settleAndUpdate(chatCallLog);
+
+                return;
+            } catch(RuntimeException settlementException){
+
+                //此调用返回异常时，结算事务已经结束
+                log.error(
+                        "聊天结算失败，将尝试保存待处理结果，requestId={}",
+                        chatCallLog.getRequestId(),
+                        settlementException
+                );
+            }
+        }
 
         try {
-            chatCallLogMapper.insert(record);
-        } catch(RuntimeException saveException){
+            //使用独立的一次事务调用保存结果，不存在失败的结算事务中继续写入
+            chatBillingService.markPending(chatCallLog);
+        } catch(RuntimeException pendingException){
+
+            //不覆盖原来的上游异常，也不向已经结束的 SSE 响应追加错误
             log.error(
-                    "保存调用记录失败,requestId = {}",
-                    record.getRequestId(),
-                    saveException
+                    "保存待处理结果失败，需要核对预留记录，requestId={}",
+                    chatCallLog.getRequestId(),
+                    pendingException
             );
         }
     }
@@ -315,12 +358,12 @@ public class RouterServiceImpl implements RouterService {
                 return;
             }
 
-            //将 usage 这一部分转换成已有的 UsageVO
-            UsageVO usage = objectMapper.treeToValue(usageNode, UsageVO.class);
+            //把当前事件中的原始用量转换成 java 对象
+            UsageVO usageVO = objectMapper.treeToValue(usageNode, UsageVO.class);
 
-            record.setPromptTokens(usage.getPromptTokens());
-            record.setCompletionTokens(usage.getCompletionTokens());
-            record.setTotalTokens(usage.getTotalTokens());
+            //与非流式响应使用相同的归一化规则
+            fillNormalizedUsage(usageVO, record);
+
         } catch (JacksonException exception){
             throw new ResponseStatusException(
                     HttpStatus.BAD_GATEWAY,
@@ -331,8 +374,176 @@ public class RouterServiceImpl implements RouterService {
 
     }
 
+    /**
+     * 统一上游用量，并填写当前调用记录
+     * @param usageVO 上游返回的原始用量，允许为空
+     * @param chatCallLog 当前请求的调用记录，包含实际使用的渠道
+     */
+    private void fillNormalizedUsage(
+            UsageVO usageVO,
+            ChatCallLog chatCallLog
+    ){
+        NormalizedUsage normalizedUsage;
 
+        try{
+            //按当前渠道解释上游字段，得到项目内部的统一用量
+            normalizedUsage = usageNormalizationService.normalize(chatCallLog.getChannel(), usageVO);
+        } catch(IllegalArgumentException | ArithmeticException exception){
+            //数据来自上游；用量矛盾或数值溢出属于上游响应异常
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY,
+                    "上游返回的用量数据异常",
+                    exception
+            );
+        }
 
+        //保存统一后的用量。未知用量继续保留 null， 不把缺失数据当做零用量
+        chatCallLog.setPromptTokens(normalizedUsage.getPromptTokens());
+        chatCallLog.setCachedInputTokens(normalizedUsage.getCachedInputTokens());
+        chatCallLog.setCompletionTokens(normalizedUsage.getCompletionTokens());
+        chatCallLog.setTotalTokens(normalizedUsage.getTotalTokens());
+    }
 
+    /**
+     * 保存本次调用使用的价格快照
+     * @param selectedClient 本次选中的上游客户端
+     * @param chatCallLog 当前请求的调用记录
+     */
+    private void fillPriceSnapshot(
+            UpstreamClient selectedClient,
+            ChatCallLog chatCallLog
+    ){
+        ModelPriceProperties modelPriceProperties;
+
+        //价格必须来自实际选中的渠道，不能固定使用某个平台的价格
+        if(selectedClient == deepseekClient){
+            modelPriceProperties = channelProperties.getPrice();
+        } else if (selectedClient == arkClient){
+            modelPriceProperties = arkProperties.getPrice();
+        }else {
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "未找到当前渠道的价格配置"
+            );
+        }
+
+        if(modelPriceProperties == null) {
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "未找到当前渠道的价格配置"
+            );
+        }
+
+        //复制具体数值，让本次记录保留调用时的价格
+        chatCallLog.setPriceVersion(modelPriceProperties.getVersion());
+        chatCallLog.setInputUnitsPerMillion(modelPriceProperties.getInputUnitsPerMillion());
+        chatCallLog.setCachedInputUnitsPerMillion(modelPriceProperties.getCachedInputUnitsPerMillion());
+        chatCallLog.setOutputUnitsPerMillion(modelPriceProperties.getOutputUnitsPerMillion());
+
+        //在发送上游请求前检查快照，避免消耗 token 后才发现价格不可用
+        String priceVersion = chatCallLog.getPriceVersion();
+
+        if(priceVersion == null || priceVersion.isBlank() || priceVersion.length() > 64){
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "价格版本不能为空，且长度不能超过64个字符"
+            );
+        }
+
+        validateSnapshotPrice(chatCallLog.getInputUnitsPerMillion());
+        validateSnapshotPrice(chatCallLog.getCachedInputUnitsPerMillion());
+        validateSnapshotPrice(chatCallLog.getOutputUnitsPerMillion());
+    }
+
+    /**
+     * 检查快照中的单价，允许明确配置零价格，拒绝缺失或负价格
+     */
+    private void validateSnapshotPrice(Long unitPrice) {
+        if (unitPrice == null || unitPrice < 0) {
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "渠道单价不能为空或为负数"
+            );
+        }
+    }
+
+    /**
+     * 补齐并校验回答长度，让预算计算与上游调用使用同一个值
+     * @param request 聊天请求，校验后保存实际使用的 maxTokens
+     * @param selectedClient 选中的上游客户端
+     */
+    private void normalizeMaxTokens(ChatCompletionDTO request, UpstreamClient selectedClient){
+
+        Integer defaultMaxTokens;
+        Integer maxAllowedTokens;
+
+        if(selectedClient == deepseekClient){
+            defaultMaxTokens = channelProperties.getDefaultMaxTokens();
+            maxAllowedTokens = channelProperties.getMaxAllowedTokens();
+        } else if (selectedClient == arkClient){
+            defaultMaxTokens = arkProperties.getDefaultMaxTokens();
+            maxAllowedTokens = arkProperties.getMaxAllowedTokens();
+        } else {
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "未找到当前渠道的输出限制配置"
+            );
+        }
+
+        //配置错误需要服务端修正，不能归责于调用者
+        if(defaultMaxTokens == null || maxAllowedTokens == null || defaultMaxTokens <= 0 || maxAllowedTokens <= 0 || defaultMaxTokens > maxAllowedTokens){
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "渠道的输出长度配置不合法"
+            );
+        }
+
+        Integer maxTokens = request.getMaxTokens();
+
+        //没填写时补默认值；明确填写或零或负数时不能偷偷替换
+        if(maxTokens == null){
+            maxTokens = defaultMaxTokens;
+        }
+
+        if(maxTokens <= 0 || maxTokens > maxAllowedTokens){
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "max_tokens必须在 1 到" + maxAllowedTokens + "之间"
+            );
+        }
+
+        request.setMaxTokens(maxTokens);
+    }
+
+    /**
+     * 读取本次调用请求的预留预算
+     * 当前采用渠道固定预算，后续可以替换为按请求估算的预算
+     * @param selectedClient 本次选中的上游客户端
+     * @return 计划预留的金额，单位微元
+     */
+    private long resolveReserveUnits(UpstreamClient selectedClient){
+        Long reserveUnits;
+
+        if(selectedClient == deepseekClient){
+            reserveUnits = channelProperties.getReserveUnits();
+        } else if (selectedClient == arkClient){
+            reserveUnits = arkProperties.getReserveUnits();
+        } else {
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "未找到当前渠道的预算配置"
+            );
+        }
+
+        //钱包预留方法要求正整数；配置错误应在调用上游之前发现
+        if(reserveUnits == null || reserveUnits <= 0){
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "渠道的预算配置不合法"
+            );
+        }
+
+        return reserveUnits;
+    }
 
 }

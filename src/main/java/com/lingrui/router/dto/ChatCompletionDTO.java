@@ -1,5 +1,6 @@
 package com.lingrui.router.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 import java.util.List;
@@ -8,7 +9,17 @@ import java.util.List;
  */
 @Data
 public class ChatCompletionDTO {
-    private String model;// 模型别名
-    private List<ChatMessageDTO> messages;// 消息列表
-    private Boolean stream;// 流式选项
+
+    // 模型别名
+    private String model;
+
+    // 消息列表
+    private List<ChatMessageDTO> messages;
+
+    // 流式选项
+    private Boolean stream;
+
+    //调用者允许生成的最大回答 token 数
+    @JsonProperty("max_tokens")
+    private Integer maxTokens;
 }

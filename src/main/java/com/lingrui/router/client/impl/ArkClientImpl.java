@@ -65,6 +65,7 @@ public class ArkClientImpl implements UpstreamClient {
         body.put("model", arkProperties.getModel());
         body.put("messages", request.getMessages());
         body.put("stream", false);
+        body.put("max_tokens", request.getMaxTokens());
 
         //发送请求 ，再把响应 JSON 转换成 Java 对象
         ChatCompletionVO response = restClient.post()
@@ -94,6 +95,7 @@ public class ArkClientImpl implements UpstreamClient {
         body.put("model", arkProperties.getModel());
         body.put("messages",request.getMessages());
         body.put("stream", true);
+        body.put("max_tokens", request.getMaxTokens());
 
         //要求上游在结束前返回整次请求的用量
         Map<String, Object> streamOptions = new HashMap<>();
