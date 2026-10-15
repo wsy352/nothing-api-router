@@ -194,4 +194,66 @@
         LIMIT 50
     </select>
 
+    <!-- 先识别有效样本，再按 key，渠道和模型别名汇总 -->
+    <select id="selectCacheStats" resultType="com.lingrui.router.vo.RouterCacheStatsVO">
+        WITH samples AS (
+            SELECT
+                api_key_id,
+                channel,
+                model_alias,
+                prompt_tokens,
+                cached_input_tokens,
+                cost_units,
+                CASE
+                    WHEN prompt_tokens IS NOT NULL
+                    AND cached_input_tokens IS NOT NULL
+                    AND prompt_tokens >= 0
+                    AND cached_input_tokens >= 0
+                    AND cached_input_tokens &lt;= prompt_tokens
+                THEN 1
+                ELSE 0
+        END AS cache_sample,
+                CASE
+                    WHEN billing_status = 'SETTLED'
+                    AND cost_units IS NOT NULL
+                    AND cost_units >= 0
+                    THEN 1
+                    ELSE 0
+            END AS settled_sample
+            FROM chat_call_log
+            WHERE status = 'SUCCESS'
+            AND api_key_id IS NOT NULL
+            AND channel IS NOT NULL
+            AND model_alias IS NOT NULL
+        )
+        SELECT
+            api_key_id AS apiKeyId,
+            channel,
+            model_alias AS modelAlias,
+            COUNT(*) AS successfulRequests,
+            SUM(cache_sample) AS cacheSampleRequests,
+            SUM(
+                CASE WHEN cache_sample = 1
+                        THEN prompt_tokens
+                    ELSE 0
+                END
+            ) AS sampleInputTokens,
+            SUM(
+                    CASE WHEN cache_sample = 1
+                            THEN cached_input_tokens
+                         ELSE 0
+                        END
+            ) AS cachedInputTokens,
+            SUM(settled_sample) AS settledRequests,
+            SUM(
+                    CASE WHEN settled_sample = 1
+                             THEN cost_units
+                         ELSE 0
+                        END
+            ) AS settledCostUnits
+        FROM samples
+        GROUP BY api_key_id, channel, model_alias
+        ORDER BY api_key_id, channel, model_alias
+    </select>
+
 </mapper>

@@ -2,6 +2,7 @@ package com.lingrui.router.mapper;
 
 import com.lingrui.router.entity.ChatCallLog;
 import com.lingrui.router.vo.ChatCallStatsVO;
+import com.lingrui.router.vo.RouterCacheStatsVO;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -48,4 +49,10 @@ public interface ChatCallLogMapper {
     List<ChatCallLog> selectUnfinishedBilling(
             @Param("afterId") Long afterId
     );
+
+    /**
+     * 按 key,渠道和模型别名汇总成功调用的缓存与费用信息
+     * 缺失的缓存用量不作为零命中参与统计
+     */
+    List<RouterCacheStatsVO> selectCacheStats();
 }

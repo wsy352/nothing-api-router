@@ -6,6 +6,7 @@ import com.lingrui.router.mapper.ChatCallLogMapper;
 import com.lingrui.router.service.ChatBillingService;
 import com.lingrui.router.service.RouterAuthService;
 import com.lingrui.router.vo.ChatCallStatsVO;
+import com.lingrui.router.vo.RouterCacheStatsVO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -119,5 +120,21 @@ public class ChatCallLogController {
                 requestId,
                 chatBillingReleaseDTO.getReason()
         );
+    }
+
+    /**
+     * 管理员查询按 key，渠道和模型别名汇总的缓存与费用
+     * 返回当前数据库中全部历史成功调用的统计结果
+     */
+    @GetMapping("/cache-stats")
+    public List<RouterCacheStatsVO> getCacheStats(
+            @RequestHeader(value = "Authorization", required = false)
+            String authorization
+    ){
+
+        //统计包含不同用户的用量与费用，只允许管理员查看
+        routerAuthService.validateAdminKey(authorization);
+
+        return chatCallLogMapper.selectCacheStats();
     }
 }

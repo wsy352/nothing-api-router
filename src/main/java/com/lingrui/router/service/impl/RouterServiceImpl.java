@@ -1,21 +1,17 @@
 package com.lingrui.router.service.impl;
 
 import com.lingrui.router.client.UpstreamClient;
-import com.lingrui.router.client.impl.DeepseekClientImpl;
 import com.lingrui.router.config.ArkProperties;
 import com.lingrui.router.config.ChannelProperties;
 import com.lingrui.router.config.ModelPriceProperties;
+import com.lingrui.router.config.RouterRoutingProperties;
 import com.lingrui.router.context.RouterAuthContext;
 import com.lingrui.router.dto.ChatCompletionDTO;
 import com.lingrui.router.dto.ChatMessageDTO;
 import com.lingrui.router.entity.ChatCallLog;
 import com.lingrui.router.model.NormalizedUsage;
-import com.lingrui.router.service.ChatBillingService;
-import com.lingrui.router.service.RouterService;
-import com.lingrui.router.service.UsageNormalizationService;
-import com.lingrui.router.vo.ChatChoiceVO;
+import com.lingrui.router.service.*;
 import com.lingrui.router.vo.ChatCompletionVO;
-import com.lingrui.router.vo.ChatMessageVO;
 import com.lingrui.router.vo.UsageVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,7 +23,6 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -69,13 +64,30 @@ public class RouterServiceImpl implements RouterService {
     @Autowired
     private UsageNormalizationService usageNormalizationService;
 
+    //会话绑定服务：查询历史渠道，并在调用成功后刷新绑定
+    @Autowired
+    private RouterSessionBindingService routerSessionBindingService;
+
+    //路由配置：提供模型别名允许使用的候选渠道及默认顺序
+    @Autowired
+    private RouterRoutingProperties routerRoutingProperties;
+
+    //前缀识别服务：提取稳定 system 前缀的摘要
+    @Autowired
+    private RouterPrefixService routerPrefixService;
+
+    //前缀历史服务：查找处理过相同前缀的候选渠道
+    @Autowired
+    private RouterPrefixHistoryService routerPrefixHistoryService;
 
     /**
      * 校验请求参数，并选择对应的上游客户端
      * @param request 聊天请求
      * @return 选中的客户端
      */
-    private UpstreamClient validateAndSelectClient(ChatCompletionDTO request) {
+    private UpstreamClient validateAndSelectClient(ChatCompletionDTO request,
+                                                   RouterAuthContext routerAuthContext,
+                                                   String sessionId) {
 
         //检查模型名称，能不能缺失，也不能是空白字符串
         if(request.getModel() == null || request.getModel().isBlank())
@@ -84,17 +96,22 @@ public class RouterServiceImpl implements RouterService {
                     "model 不能为空"
             );
 
-        //根据模型别名，选择本次请求使用的客户端
-        UpstreamClient selectedClient;
-        if(request.getModel().equals(channelProperties.getAlias())){
-            selectedClient = deepseekClient;
-        }else if(request.getModel().equals(arkProperties.getAlias())){
-            selectedClient = arkClient;
-        }else{
+        //从配置中获取当前模型别名的候选渠道
+        List<String> candidateChannels = routerRoutingProperties.getModels().get(request.getModel());
+        if(candidateChannels == null){
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
                     "不支持的模型别名：" + request.getModel()
             );
+        }
+
+        if(candidateChannels.isEmpty()){
+            throw new IllegalStateException("模型别名未配置候选渠道");
+        }
+
+        //提前检查整个候选列表，避免错误配置被默认渠道掩盖
+        for(String channel : candidateChannels){
+            resolveClient(channel);
         }
 
         //消息列表必须存在，并且不能是空白字符串
@@ -144,6 +161,39 @@ public class RouterServiceImpl implements RouterService {
             }
         }
 
+        //参数校验完成后，再查询会话偏好和计算前缀
+        String selectedChannel = routerSessionBindingService.findChannel(
+                routerAuthContext.getApiKeyId(),
+                request.getModel(),
+                sessionId
+        );
+
+        //旧会话渠道已不在配置中时，放弃这个偏好
+        if(selectedChannel != null
+                && !candidateChannels.contains(selectedChannel)){
+            selectedChannel = null;
+        }
+
+        //没有有效会话偏好时，再考虑稳定前缀的历史
+        if(selectedChannel == null){
+            String prefixHash = routerPrefixService.calculatePrefixHash(
+                    request.getMessages());
+
+            selectedChannel = routerPrefixHistoryService.findChannel(
+                    routerAuthContext.getApiKeyId(),
+                    request.getModel(),
+                    prefixHash,
+                    candidateChannels
+            );
+        }
+
+        //两种历史都没有提供有效渠道时，使用默认配置值
+        if(selectedChannel == null){
+            selectedChannel = candidateChannels.get(0);
+        }
+
+        UpstreamClient selectedClient = resolveClient(selectedChannel);
+
         //非流式与流式共用校验接口，统一补齐输入长度
         normalizeMaxTokens(request, selectedClient);
 
@@ -157,10 +207,10 @@ public class RouterServiceImpl implements RouterService {
      * @return 完整聊天响应
      */
     @Override
-    public ChatCompletionVO chat(ChatCompletionDTO request, RouterAuthContext routerAuthContext) {
+    public ChatCompletionVO chat(ChatCompletionDTO request, RouterAuthContext routerAuthContext, String sessionId) {
 
         //完成校验，并拿到选中的客户端
-        UpstreamClient selectedClient = validateAndSelectClient(request);
+        UpstreamClient selectedClient = validateAndSelectClient(request, routerAuthContext, sessionId);
 
         //防止流式请求被误交给非流式方法
         if(Boolean.TRUE.equals(request.getStream())){
@@ -204,6 +254,8 @@ public class RouterServiceImpl implements RouterService {
             } finally {
             //无论成功还是失败，都尝试保存调用记录
             finishBilling(record, startNanos);
+            saveSessionBinding(record, sessionId);
+            savePrefixHistory(request, record);
         }
     }
 
@@ -214,9 +266,13 @@ public class RouterServiceImpl implements RouterService {
      * @param eventConsumer 收到事件后执行的动作
      */
     @Override
-    public void streamChat(ChatCompletionDTO request, RouterAuthContext routerAuthContext, Consumer<String> eventConsumer) {
+    public void streamChat(ChatCompletionDTO request,
+                           RouterAuthContext routerAuthContext,
+                           String sessionId,
+                           Consumer<String> eventConsumer
+                           ) {
 
-        UpstreamClient selectedClient = validateAndSelectClient(request);
+        UpstreamClient selectedClient = validateAndSelectClient(request, routerAuthContext, sessionId);
 
         if(!Boolean.TRUE.equals(request.getStream())){
             throw new ResponseStatusException(
@@ -253,6 +309,8 @@ public class RouterServiceImpl implements RouterService {
         } finally{
             //整次流式调用结束后，统一结算或保存待处理结果
             finishBilling(record, startNanos);
+            saveSessionBinding(record, sessionId);
+            savePrefixHistory(request, record);
         }
     }
 
@@ -544,6 +602,77 @@ public class RouterServiceImpl implements RouterService {
         }
 
         return reserveUnits;
+    }
+
+    /**
+     * 成功调用后保存会话渠道偏好
+     * 绑定属于路由辅助信息，保存失败不能改变聊天结果或资金状态
+     */
+    private void saveSessionBinding(ChatCallLog chatCallLog, String sessionId){
+
+        if(sessionId == null || !"SUCCESS".equals(chatCallLog.getStatus())){
+            return;
+        }
+
+        try{
+            routerSessionBindingService.saveBinding(
+                    chatCallLog.getApiKeyId(),
+                    chatCallLog.getModelAlias(),
+                    sessionId,
+                    chatCallLog.getChannel());
+        } catch (RuntimeException exception){
+            log.warn(
+                    "保存会话绑定失败，requestId = {}",
+                    chatCallLog.getRequestId(),
+                    exception
+            );
+        }
+    }
+
+    /**
+     * 将配置中的渠道标识转换成对应客户端
+     * 当前只接入了 deepseek 和火山方舟两种渠道
+     */
+    private UpstreamClient resolveClient(String channel) {
+        if ("deepseek".equals(channel)) {
+            return deepseekClient;
+        } else if ("ark".equals(channel)) {
+            return arkClient;
+        } else {
+            //未知渠道属于服务端配置错误，不能静默换成其他渠道
+            throw new IllegalStateException("路由配置中存在不支持的渠道：" + channel);
+        }
+    }
+
+    /**
+     * 成功调用后记录前缀历史
+     * 保存失败只影响后续路由线索，不能改变本次聊天和计费结果
+     */
+    private void savePrefixHistory(
+            ChatCompletionDTO request,
+            ChatCallLog chatCallLog
+    ){
+        if(!"SUCCESS".equals(chatCallLog.getStatus())){
+            return;
+        }
+
+        try {
+            String prefixHash =
+                    routerPrefixService.calculatePrefixHash(request.getMessages());
+
+            routerPrefixHistoryService.saveSuccess(
+                    chatCallLog.getApiKeyId(),
+                    chatCallLog.getModelAlias(),
+                    prefixHash,
+                    chatCallLog.getChannel()
+            );
+        } catch(RuntimeException exception){
+            log.warn(
+                    "保存前缀历史失败，requestId={}",
+                    chatCallLog.getRequestId(),
+                    exception
+            );
+        }
     }
 
 }

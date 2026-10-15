@@ -93,11 +93,10 @@
             frozen_units = frozen_units - #{reserveUnits},
             updated_at = CURRENT_TIMESTAMP(3)
         WHERE user_id = #{userId}
-        AND #{reservedUnits} > 0
+        AND #{reserveUnits} > 0
         AND #{actualCostUnits} >= 0
-        AND #{reserveUnits} >= #{actualCostUnits}
         AND frozen_units >= #{reserveUnits}
-        AND balance_units >= (#{reserveUnits} - #{actualCostUnits})
-        AND balance_units &lt;= 9223372036854775807 - GREATEST(#{reservedUnits} - #{actualCostUnits}, 0)
+        AND balance_units >= GREATEST(#{actualCostUnits} - #{reserveUnits}, 0)
+        AND balance_units &lt;= 9223372036854775807 - GREATEST(#{reserveUnits} - #{actualCostUnits}, 0)
     </update>
 </mapper>

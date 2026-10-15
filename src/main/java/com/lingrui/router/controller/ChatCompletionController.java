@@ -31,12 +31,15 @@ public class ChatCompletionController {
      * 根据 stream 参数，处理非流式或流式聊天请求
      * @param request 聊天请求
      * @param response 发送给调用者的 HTTP 响应
+     * @param sessionId 可选的会话编号，用于优先复用历史渠道
      * @return 非流式返回响应对象；流式已直接写入响应，返回null
      */
     @PostMapping("/chat/completions")
     public Object chat(@RequestBody ChatCompletionDTO request,
                        @RequestHeader(value =  "Authorization", required = false)
                        String authorization,
+                       @RequestHeader(value = "X-Session-Id", required = false)
+                               String sessionId,
                        HttpServletResponse response) throws IOException {
 
         //验证秘钥，并接收服务端查询得到的用户身份
@@ -44,7 +47,7 @@ public class ChatCompletionController {
 
         //非流式：仍然按照原来的方式返回完整响应
         if(!Boolean.TRUE.equals(request.getStream())){
-            return routerService.chat(request, routerAuthContext);
+            return routerService.chat(request, routerAuthContext,sessionId);
         }
 
         try{
@@ -52,6 +55,7 @@ public class ChatCompletionController {
             routerService.streamChat(
                     request,
                     routerAuthContext,
+                    sessionId,
                     data -> sendSseEvent(response, data)
             );
         } catch(UncheckedIOException exception){

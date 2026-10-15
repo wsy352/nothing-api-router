@@ -43,6 +43,13 @@ router:
       cached-input-units-per-million: 1000000
       output-units-per-million: 1000000
 
+  routing:
+    models:
+      study-chat:
+        - deepseek
+      doubao-chat:
+        - ark
+
   auth:
     api-key: ${ROUTER_API_KEY}
     admin-key: ${ROUTER_ADMIN_KEY}
